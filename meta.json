@@ -1,0 +1,1 @@
+{"N_radial": 20, "N_adv": 20, "input_order": ["radius", "chord", "twist", "diameter", "N_blades", "J"], "target_order": ["CT", "CP"]}
