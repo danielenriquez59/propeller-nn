@@ -8,8 +8,10 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_absolute_error, r2_score
 import joblib
 import json
-import ast
+import ast, os
 import pdb
+
+out_dir = "model_weights"
 
 def diagnose_data_homogeneity(df):
     """
@@ -109,114 +111,139 @@ def read_data():
 
 def prepare_data(df, feature_cols, target_cols):
     """
-    Transforms the DataFrame into flattened numpy arrays for training.
+    Transforms the DataFrame into structured numpy arrays for CNN-based training.
 
-    For each row in the DataFrame, it:
-    1. Flattens the geometry arrays (radius, chord, twist) and scalar
-       metadata (pitch, diameter, N_blades) along with the 'J' array
-       into a single feature vector `X`.
-    2. Flattens the 'CT' and 'CP' target arrays into a single target
-       vector `y`.
-    3. Splits the data into training, validation, and test sets.
-    4. Applies StandardScaler to both features and targets.
+    This function creates three sets of arrays:
+    1. X_geom: A 3D array for the CNN (radius, chord, twist).
+       Shape: (n_samples, 3, N_radial)
+    2. X_misc: A 2D array for the MLP (diameter, N_blades, J_array).
+       Shape: (n_samples, 2 + N_adv)
+    3. y: A 2D array for the targets (CT, CP).
+       Shape: (n_samples, 2 * N_adv)
     """
-    # Infer array lengths from the first row
     if df.empty:
         raise ValueError("Input DataFrame is empty. Cannot prepare data.")
     
     N_radial = len(df.iloc[0]["radius"])
     N_adv = len(df.iloc[0]["J"])
-    
-    input_dim = 3 * N_radial + 2 + N_adv
-    output_dim = 2 * N_adv
 
-    def build_X(row):
-        geom = np.concatenate([
-            np.asarray(row["radius"], dtype=np.float32),
-            np.asarray(row["chord"], dtype=np.float32),
-            np.asarray(row["twist"], dtype=np.float32)
-        ])
-        scalars = np.array([row["diameter"], row["N_blades"]], dtype=np.float32)
+    # Pre-allocate numpy arrays for efficiency
+    n_samples = len(df)
+    X_geom = np.zeros((n_samples, 3, N_radial), dtype=np.float32)
+    X_misc = np.zeros((n_samples, 2 + N_adv), dtype=np.float32)
+    y = np.zeros((n_samples, 2 * N_adv), dtype=np.float32)
+
+    # Populate the arrays
+    for i, (_, row) in enumerate(df.iterrows()):
+        X_geom[i, 0, :] = np.asarray(row["radius"], dtype=np.float32)
+        X_geom[i, 1, :] = np.asarray(row["chord"], dtype=np.float32)
+        X_geom[i, 2, :] = np.asarray(row["twist"], dtype=np.float32)
+        
+        misc_scalars = np.array([row["diameter"], row["N_blades"]], dtype=np.float32)
         j_array = np.asarray(row["J"], dtype=np.float32)
-        return np.concatenate([geom, scalars, j_array])
+        X_misc[i, :] = np.concatenate([misc_scalars, j_array])
 
-    def build_y(row):
-        return np.concatenate([
+        y[i, :] = np.concatenate([
             np.asarray(row["CT"], dtype=np.float32),
             np.asarray(row["CP"], dtype=np.float32)
         ])
-
-    X = np.vstack(df.apply(build_X, axis=1).to_numpy())
-    y = np.vstack(df.apply(build_y, axis=1).to_numpy())
     
-    # Assert dimensions
-    assert X.shape[1] == input_dim, f"X dimension mismatch: expected {input_dim}, got {X.shape[1]}"
-    assert y.shape[1] == output_dim, f"y dimension mismatch: expected {output_dim}, got {y.shape[1]}"
-
     # Split: 70% train, 15% val, 15% test
-    X_train, X_tmp, y_train, y_tmp = train_test_split(X, y, test_size=0.3, random_state=0)
-    X_val, X_test, y_val, y_test = train_test_split(X_tmp, y_tmp, test_size=0.5, random_state=0)
+    (X_geom_train, X_geom_tmp,
+     X_misc_train, X_misc_tmp,
+     y_train, y_tmp) = train_test_split(X_geom, X_misc, y, test_size=0.3, random_state=0)
+    
+    (X_geom_val, X_geom_test,
+     X_misc_val, X_misc_test,
+     y_val, y_test) = train_test_split(X_geom_tmp, X_misc_tmp, y_tmp, test_size=0.5, random_state=0)
 
-    # Fit scalers on training data only
-    x_scaler = StandardScaler().fit(X_train)
+    # Fit and apply scaler only on misc features
+    misc_scaler = StandardScaler().fit(X_misc_train)
+    X_misc_train = misc_scaler.transform(X_misc_train)
+    X_misc_val = misc_scaler.transform(X_misc_val)
+    X_misc_test = misc_scaler.transform(X_misc_test)
+
+    # Fit and apply scaler on targets
     y_scaler = StandardScaler().fit(y_train)
-
-    # Apply scaling to all sets
-    X_train = x_scaler.transform(X_train)
-    X_val = x_scaler.transform(X_val)
-    X_test = x_scaler.transform(X_test)
     y_train = y_scaler.transform(y_train)
     y_val = y_scaler.transform(y_val)
     y_test = y_scaler.transform(y_test)
-    return X_train, X_val, X_test, y_train, y_val, y_test, x_scaler, y_scaler, input_dim, output_dim, N_adv
+    
+    return (X_geom_train, X_misc_train, X_geom_val, X_misc_val, X_geom_test, X_misc_test,
+            y_train, y_val, y_test, misc_scaler, y_scaler)
 
 
-def create_data_loaders(X_train, y_train, X_val, y_val, batch_size=256):
+def create_data_loaders(X_geom, X_misc, y, batch_size=256):
     """Create PyTorch data loaders for training and validation."""
-    train_loader = DataLoader(
-        TensorDataset(torch.tensor(X_train), torch.tensor(y_train)),
-        batch_size=batch_size, shuffle=True
+    dataset = TensorDataset(
+        torch.tensor(X_geom),
+        torch.tensor(X_misc),
+        torch.tensor(y)
     )
-    val_loader = DataLoader(
-        TensorDataset(torch.tensor(X_val), torch.tensor(y_val)),
-        batch_size=batch_size, shuffle=False
-    )
-    return train_loader, val_loader
-
+    return DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
 class PropNet(nn.Module):
-    """Neural network for propeller performance prediction."""
-    def __init__(self, in_dim, hidden=(256, 128, 64), out_dim=2, p_drop=0.2):
+    def __init__(self, n_radial, n_adv, hidden=128):
         super().__init__()
-        layers = []
-        prev = in_dim
-        for h in hidden:
-            layers += [nn.Linear(prev, h), nn.ReLU(), nn.Dropout(p_drop)]
-            prev = h
-        self.net = nn.Sequential(*layers, nn.Linear(prev, out_dim))
+        self.cnn = nn.Sequential(
+            nn.Conv1d(3, 32, kernel_size=3, padding=1), nn.ReLU(),
+            nn.Conv1d(32, 64, kernel_size=3, padding=1), nn.ReLU(),
+            nn.AdaptiveAvgPool1d(1)            # → [B, 64, 1]
+        )
+        in_dense = 64 + 2 + n_adv              # 64 CNN feat + scalars + J array
+        self.mlp = nn.Sequential(
+            nn.Linear(in_dense, hidden), nn.ReLU(), nn.Dropout(0.2),
+            nn.Linear(hidden, 2*n_adv)
+        )
 
-    def forward(self, x):
-        return self.net(x)
+    def forward(self, x_geom, x_misc):
+        # x_geom : [B, 3, N_radial]   (radius, chord, twist stacked on channel dim)
+        z = self.cnn(x_geom).squeeze(-1)       # [B, 64]
+        z = torch.cat([z, x_misc], dim=1)      # misc = [diam, N_blades, J...]
+        return self.mlp(z)
 
 
-def create_model(input_dim, hidden=(256, 128, 64), output_dim=2):
+def create_model(n_radial, n_adv):
     """Create and initialize the PropNet model."""
-    model = PropNet(in_dim=input_dim, hidden=hidden, out_dim=output_dim)
+    model = PropNet(n_radial=n_radial, n_adv=n_adv)
     return model
 
 
-def train_model(model, train_loader, X_val, y_val, epochs=200, lr=2e-3, weight_decay=1e-4, patience=10):
-    """Train the model with early stopping."""
+def train_model(model,train_loader,X_geom_val,X_misc_val,y_val,epochs=1000,lr=2e-3,weight_decay=1e-4,patience=300):
+    """
+    Train the model with early stopping and an adaptive learning rate.
+
+    This function uses a ReduceLROnPlateau scheduler to decrease the learning
+    rate when the validation loss plateaus.
+
+    Parameters:
+        model (nn.Module): The neural network model to train.
+        train_loader (DataLoader): PyTorch DataLoader yielding training batches.
+        X_geom_val (np.ndarray): Validation geometry input, shape [N, 3, N_radial].
+        X_misc_val (np.ndarray): Validation misc input, shape [N, 2+N_adv].
+        y_val (np.ndarray): Validation targets, shape [N, 2*N_adv].
+        epochs (int): Maximum number of training epochs.
+        lr (float): Initial learning rate for Adam optimizer.
+        weight_decay (float): L2 regularization strength.
+        patience (int): Early stopping patience (epochs to wait for improvement).
+    """
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, 'min', factor=0.2, patience=50)
     
+    # Move validation data to tensor once
+    X_geom_val_t = torch.tensor(X_geom_val)
+    X_misc_val_t = torch.tensor(X_misc_val)
+    y_val_t = torch.tensor(y_val)
+
     best_val, wait = np.inf, 0
     
     for epoch in range(epochs):
         # ---- train one epoch ----
         model.train()
-        for xb, yb in train_loader:
-            pred = model(xb)
+        for x_geom_b, x_misc_b, yb in train_loader:
+            pred = model(x_geom_b, x_misc_b)
             loss = criterion(pred, yb)
             optimizer.zero_grad()
             loss.backward()
@@ -225,12 +252,16 @@ def train_model(model, train_loader, X_val, y_val, epochs=200, lr=2e-3, weight_d
         # ---- validation ----
         model.eval()
         with torch.no_grad():
-            val_loss = criterion(model(torch.tensor(X_val)), torch.tensor(y_val)).item()
+            val_pred = model(X_geom_val_t, X_misc_val_t)
+            val_loss = criterion(val_pred, y_val_t).item()
         
         print(f"epoch {epoch:3d} | val MSE {val_loss:.4g}")
 
+        # Step the scheduler
+        scheduler.step(val_loss)
+
         if val_loss < best_val:
-            torch.save(model.state_dict(), "best.pt")
+            torch.save(model.state_dict(), os.path.join(out_dir, "best.pt"))
             best_val, wait = val_loss, 0
         else:
             wait += 1
@@ -241,21 +272,20 @@ def train_model(model, train_loader, X_val, y_val, epochs=200, lr=2e-3, weight_d
     return model
 
 
-def evaluate_model(model, X_test, y_test, y_scaler, N_adv):
+def evaluate_model(model, X_geom_test, X_misc_test, y_test, y_scaler, N_adv):
     """Evaluate the trained model on test set."""
     # Load best model weights
-    model.load_state_dict(torch.load("best.pt"))
+    model.load_state_dict(torch.load(os.path.join(out_dir, "best.pt")))
     model.eval()
     
     with torch.no_grad():
-        y_pred = model(torch.tensor(X_test)).numpy()
+        pred_scaled = model(torch.tensor(X_geom_test), torch.tensor(X_misc_test)).numpy()
     
     # Invert scaling to get actual values
-    y_pred = y_scaler.inverse_transform(y_pred)
+    y_pred = y_scaler.inverse_transform(pred_scaled)
     y_true = y_scaler.inverse_transform(y_test)
 
     # Reshape to separate CT and CP
-    # Shape becomes (n_samples, 2, N_adv)
     y_pred_reshaped = y_pred.reshape(-1, 2, N_adv)
     y_true_reshaped = y_true.reshape(-1, 2, N_adv)
 
@@ -273,54 +303,48 @@ def evaluate_model(model, X_test, y_test, y_scaler, N_adv):
     return y_pred, y_true, mae_ct, mae_cp, r2_ct, r2_cp
 
 
-def save_model_pipeline(model, x_scaler, y_scaler, feature_cols, target_cols, N_radial, N_adv):
+def save_model_pipeline(model, misc_scaler, y_scaler, N_radial, N_adv):
     """Save the complete model pipeline for inference."""
-    torch.save(model.state_dict(), "propnet_weights.pt")
-    joblib.dump(x_scaler, "x_scaler.joblib")
-    joblib.dump(y_scaler, "y_scaler.joblib")
+    torch.save(model.state_dict(), os.path.join(out_dir, "propnet_weights.pt"))
+    joblib.dump(misc_scaler, os.path.join(out_dir, "misc_scaler.joblib"))
+    joblib.dump(y_scaler, os.path.join(out_dir, "y_scaler.joblib"))
     
-    with open("meta.json", "w") as f:
-        json.dump({
-            "N_radial": N_radial,
-            "N_adv": N_adv,
-            "input_order": feature_cols, # This is conceptual
-            "target_order": target_cols # This is conceptual
-        }, f)
+    with open(os.path.join(out_dir, "meta.json"), "w") as f:
+        json.dump({ "N_radial": N_radial, "N_adv": N_adv }, f)
 
 
 def load_model_pipeline():
     """Load the complete model pipeline for inference."""
     # Load metadata
-    with open("meta.json", "r") as f:
+    with open(os.path.join(out_dir, "meta.json"), "r") as f:
         meta = json.load(f)
     
     # Load scalers
-    x_scaler = joblib.load("x_scaler.joblib")
-    y_scaler = joblib.load("y_scaler.joblib")
+    misc_scaler = joblib.load(os.path.join(out_dir, "misc_scaler.joblib"))
+    y_scaler = joblib.load(os.path.join(out_dir, "y_scaler.joblib"))
     
     # Create and load model
     N_radial = meta['N_radial']
     N_adv = meta['N_adv']
-    input_dim = 3 * N_radial + 2 + N_adv
-    output_dim = 2 * N_adv
-    model = create_model(input_dim, output_dim=output_dim)
-    model.load_state_dict(torch.load("propnet_weights.pt"))
+    model = create_model(N_radial, N_adv)
+    model.load_state_dict(torch.load(os.path.join(out_dir, "propnet_weights.pt")))
     model.eval()
     
-    return model, x_scaler, y_scaler, meta
+    return model, misc_scaler, y_scaler, meta
 
 
-def predict(model, x_scaler, y_scaler, radius, chord, twist, diameter, N_blades, J_array):
+def predict(model, misc_scaler, y_scaler, radius, chord, twist, diameter, N_blades, J_array):
     """Make predictions for given propeller geometry and operating conditions."""
-    # Build feature vector (same ordering as training)
-    x = build_feature_vector(radius, chord, twist, diameter, N_blades, J_array)
-    x = x_scaler.transform(x[None, :])
+    x_geom, x_misc = build_input_tensors(radius, chord, twist, diameter, N_blades, J_array)
+    
+    # Scale the misc features
+    x_misc_scaled = misc_scaler.transform(x_misc)
     
     with torch.no_grad():
-        y_hat = model(torch.tensor(x)).numpy()
+        y_hat_scaled = model(torch.tensor(x_geom), torch.tensor(x_misc_scaled)).numpy()
     
-    # Inverse transform to get actual thrust and torque values
-    y_hat = y_scaler.inverse_transform(y_hat)
+    # Inverse transform the prediction
+    y_hat = y_scaler.inverse_transform(y_hat_scaled)
     
     # Reshape back into separate CT and CP arrays
     N_adv = len(J_array)
@@ -328,46 +352,54 @@ def predict(model, x_scaler, y_scaler, radius, chord, twist, diameter, N_blades,
     return ct_pred, cp_pred
 
 
-def build_feature_vector(radius, chord, twist, diameter, N_blades, J_array):
-    """Build feature vector from propeller geometry and operating conditions."""
-    geom = np.concatenate([radius, chord, twist])
-    scalars = np.array([diameter, N_blades], dtype=np.float32)
-    features = np.concatenate([geom, scalars, np.asarray(J_array, dtype=np.float32)])
-    return features.astype(np.float32)
+def build_input_tensors(radius, chord, twist, diameter, N_blades, J_array):
+    """Build the geometry and miscellaneous tensors for a single prediction."""
+    # Add a batch dimension of 1
+    x_geom = np.zeros((1, 3, len(radius)), dtype=np.float32)
+    x_geom[0, 0, :] = np.asarray(radius, dtype=np.float32)
+    x_geom[0, 1, :] = np.asarray(chord, dtype=np.float32)
+    x_geom[0, 2, :] = np.asarray(twist, dtype=np.float32)
+
+    misc_scalars = np.array([diameter, N_blades], dtype=np.float32)
+    j_array_np = np.asarray(J_array, dtype=np.float32)
+    x_misc = np.concatenate([misc_scalars, j_array_np]).reshape(1, -1)
+    
+    return x_geom, x_misc
 
 
 def main():
     """Main training pipeline."""
     print("Loading data...")
-    df, feature_cols, target_cols, N_radial = read_data()
+    df, _, _, _ = read_data()
     if df is None:
         return
 
     # First, diagnose the data for inconsistencies
     if not diagnose_data_homogeneity(df):
         print("Data is not homogeneous. Aborting training.")
-        print("Please fix the data source or filter the DataFrame before proceeding.")
         return
+    
+    N_adv = len(df.iloc[0]['J'])
+    N_radial = len(df.iloc[0]['radius'])
 
     print("Preparing data...")
-    X_train, X_val, X_test, y_train, y_val, y_test, x_scaler, y_scaler, input_dim, output_dim, N_adv = prepare_data(
-        df, feature_cols, target_cols
-    )
+    (X_geom_train, X_misc_train, X_geom_val, X_misc_val, X_geom_test, X_misc_test,
+     y_train, y_val, y_test, misc_scaler, y_scaler) = prepare_data(df, None, None)
     
     print("Creating data loaders...")
-    train_loader, val_loader = create_data_loaders(X_train, y_train, X_val, y_val)
+    train_loader = create_data_loaders(X_geom_train, X_misc_train, y_train)
     
     print("Creating model...")
-    model = create_model(input_dim=input_dim, output_dim=output_dim)
+    model = create_model(N_radial, N_adv)
     
     print("Training model...")
-    model = train_model(model, train_loader, X_val, y_val)
+    model = train_model(model, train_loader, X_geom_val, X_misc_val, y_val)
     
     print("Evaluating model...")
-    evaluate_model(model, X_test, y_test, y_scaler, N_adv)
+    evaluate_model(model, X_geom_test, X_misc_test, y_test, y_scaler, N_adv)
     
     print("Saving model pipeline...")
-    save_model_pipeline(model, x_scaler, y_scaler, feature_cols, target_cols, N_radial, N_adv)
+    save_model_pipeline(model, misc_scaler, y_scaler, N_radial, N_adv)
     
     print("Training complete!")
 
