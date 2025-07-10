@@ -69,6 +69,7 @@ python run_model.py
 
 ## File Structure
 
+- `process_data.py`: Process data processes the UIUC database. Currently misses some 
 - `gui_apc_nn.py`: The main entry point for the interactive GUI application.
 - `learn_apc.py`: The script used to train the neural network model.
 - `run_model.py`: A command-line script to perform a single prediction.

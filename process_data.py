@@ -17,6 +17,15 @@ def determine_filetype(file):
         else:
             return 'geom'
 
+def calculate_tip_mach(RPM, diameter_m, speed=330):
+    """
+    Calculate the tip Mach number for a propeller.
+    """
+    tip_speed = RPM * diameter_m * np.pi / 60
+    mach = tip_speed / speed
+   
+    return mach
+
 def main():
     # Define folders to search
     folders = ["volume-1/data", "volume-2/data", "volume-3/data", "volume-4/data"]
@@ -32,7 +41,9 @@ def main():
                 filetype = determine_filetype(file_path)
                 if filetype != 'performance':
                     continue
-                prop_name, pitch, diameter, N_blades = read_propeller_info(file)
+                prop_name, pitch, diameter, N_blades, RPM = read_propeller_info(file)
+                tip_mach = calculate_tip_mach(RPM, diameter)
+                
                 if pitch is None or diameter is None:
                     continue
                 try:
@@ -49,7 +60,9 @@ def main():
                     "J": J_new,
                     "CT": CT_interp,
                     "CP": CP_interp,
-                    "eta": eta_interp
+                    "eta": eta_interp,
+                    "RPM": RPM,
+                    "tip_mach": tip_mach
                 })
                 perf_file_info.append((prop_name, pitch, diameter, N_blades, f, file))
     performance = pd.DataFrame(perf_rows)
@@ -86,7 +99,7 @@ def main():
                     if filetype != 'geom':
                         continue
                     # Try to match prop_name
-                    geom_prop_name, _, _, _ = read_propeller_info(file)
+                    geom_prop_name, _, _, _, _ = read_propeller_info(file)
                     if geom_prop_name == prop_name:
                         try:
                             r_R_new, c_R_interp, beta_interp = read_geom(file_path)
@@ -94,7 +107,7 @@ def main():
                             print(f"Error reading geometry file {file_path}: {e}")
                             continue
                         # Add geometry info to the DataFrame
-                        for col, val in zip(geom_cols, [r_R_new, c_R_interp, beta_interp, file_path]):
+                        for col, val in zip(geom_cols, [r_R_new, c_R_interp, beta_interp, file]):
                             performance.at[idx, col] = val
                         geom_found = True
                         break
@@ -113,6 +126,17 @@ def main():
     return
 
 def read_propeller_info(filename):
+    """
+    Reads the propeller info from the filename.
+    Returns:
+        prop_name: str
+        pitch: float
+        diameter (meters): float
+        N_blades: int
+        RPM: int
+    """
+    def calc_pitch(diameter, pitch_angle_deg):
+        return 2*3.145*(diameter*.75)*np.tan(np.deg2rad(pitch_angle_deg))
     base_name = os.path.splitext(filename)[0]
     parts = base_name.split('_')
     if len(parts) >= 2:
@@ -133,8 +157,44 @@ def read_propeller_info(filename):
                 pitch = None
     # All propellers have 2 blades
     N_blades = 2
+    blade_3 = ['mit_4.3x', 'mit_5x4']
+    if any(blade in filename for blade in blade_3):
+        N_blades = 3
 
-    return prop_name, pitch, diameter, N_blades
+    RPM = None
+    if len(parts) > 3:
+        try:
+            RPM = int(parts[-1])
+        except:
+            RPM = None
+    
+    if diameter is None:
+        if 'tri' in parts[1]:
+            diameter = 2.55
+            pitch = calc_pitch(diameter, 20)
+        elif 'u80' in parts[1]:
+            diameter = 3.15
+            pitch = calc_pitch(diameter, 15)
+        else:
+            try:
+                diameter = float(parts[1])
+                pitch = float(parts[2].replace('deg', ''))
+            except:
+                diameter = None
+                pitch = None
+    
+    # convert diameter to meters
+    if diameter is not None:
+        if diameter < 20:
+            # in
+            diameter = diameter * 0.0254
+            pitch = pitch * 0.0254
+        else:
+            # mm
+            diameter = diameter * .001
+            pitch = pitch * .001
+
+    return prop_name, pitch, diameter, N_blades, RPM
 
 def read_geom(file):
     # Read the geometry file with three columns: r/R, c/R, beta
@@ -190,7 +250,7 @@ def read_performance(file):
             data = data.astype(float)
         except:
             pdb.set_trace()
-
+    
     J_new = np.linspace(data['J'].min(), data['J'].max(), 20)
 
     # Interpolate so the data has 20 points

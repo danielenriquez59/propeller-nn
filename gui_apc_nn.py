@@ -219,10 +219,15 @@ class MainWindow(QMainWindow):
         self.diameter_input.setRange(2, 30); self.diameter_input.setValue(12)
         self.n_blades_input = QSpinBox()
         self.n_blades_input.setRange(1, 8); self.n_blades_input.setValue(2)
+        self.tip_mach_input = QDoubleSpinBox()
+        self.tip_mach_input.setRange(0.1, 1.5); self.tip_mach_input.setValue(0.7); self.tip_mach_input.setSingleStep(0.05)
+        
         scalar_layout.addWidget(QLabel("Diameter (in):"))
         scalar_layout.addWidget(self.diameter_input)
         scalar_layout.addWidget(QLabel("Num Blades:"))
         scalar_layout.addWidget(self.n_blades_input)
+        scalar_layout.addWidget(QLabel("Tip Mach:"))
+        scalar_layout.addWidget(self.tip_mach_input)
         scalar_box.setLayout(scalar_layout)
         left_layout.addWidget(scalar_box)
         
@@ -265,23 +270,38 @@ class MainWindow(QMainWindow):
     @Slot()
     def run_prediction(self):
         """ Gathers data from UI, runs model, and updates plot. """
-        # Get data from UI widgets
-        radius = np.linspace(0, 1, self.N_radial)
-        _, chord = self.chord_editor.get_discretized_values(self.N_radial)
-        _, twist = self.twist_editor.get_discretized_values(self.N_radial)
-        
+        # 1. Get scalar values from inputs
         diameter = self.diameter_input.value()
         n_blades = self.n_blades_input.value()
-        
-        j_array = np.linspace(0, 1, self.N_adv)
+        tip_mach = self.tip_mach_input.value()
 
-        # Run prediction
-        predicted_ct, predicted_cp = predict(
-            self.model, self.misc_scaler, self.y_scaler,
-            radius, chord, twist, diameter, n_blades, j_array
+        # 2. Get geometry from spline editors
+        radius, chord = self.chord_editor.get_discretized_values(self.N_radial)
+        _, twist = self.twist_editor.get_discretized_values(self.N_radial)
+
+        # 3. Define J array for prediction (based on model metadata)
+        # Note: In a real app, this might be a user input as well.
+        j_array = np.linspace(0.01, 1.5, self.N_adv)
+
+        # 4. Run prediction
+        ct_pred, cp_pred = predict(
+            model=self.model,
+            misc_scaler=self.misc_scaler,
+            y_scaler=self.y_scaler,
+            radius=radius,
+            chord=chord,
+            twist=twist,
+            diameter=diameter,
+            n_blades=n_blades,
+            J_array=j_array,
+            tip_mach=tip_mach
         )
+
+        # 5. Update the plot with new data
+        self.update_plot(j_array, ct_pred, cp_pred)
         
-        # --- Update plot with Bokeh ---
+    def update_plot(self, j, ct, cp):
+        """ Updates the Bokeh plot with new data. """
         # 1. Create Hover Tool for rich data display
         hover = HoverTool(
             tooltips=[
@@ -304,9 +324,9 @@ class MainWindow(QMainWindow):
 
         # 3. Create a ColumnDataSource for efficient data handling
         source = ColumnDataSource(data={
-            'x': j_array,
-            'ct': predicted_ct,
-            'cp': predicted_cp
+            'x': j,
+            'ct': ct,
+            'cp': cp
         })
         
         # 4. Add line and circle renderers to the plot

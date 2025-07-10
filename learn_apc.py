@@ -10,6 +10,9 @@ import joblib
 import json
 import ast, os
 import pdb
+import matplotlib.pyplot as plt
+
+from nn_functions import PropNet, build_input_tensors, predict, load_model_pipeline
 
 out_dir = "model_weights"
 
@@ -97,15 +100,48 @@ def read_data():
     The final DataFrame will have one row for each original performance
     record, with columns containing arrays for J, CT, CP, radius, chord,
     and twist.
-    """
-    
-    df = pd.read_pickle("propeller_data_combined.pkl")
 
+    Example of df.head():
+
+       prop_id propeller_names  diameter  N_blades   tip_mach RPM\
+    0      101         APC_10x6      10.0         2   0.2  1000
+    1      102         APC_11x7      11.0         2   0.2  1000
+
+    radius  \
+    0  [0.2, 0.4, 0.6, 0.8, 1.0]                     
+    1  [0.2, 0.4, 0.6, 0.8, 1.0]                     
+
+    chord  \
+    0  [1.2, 1.1, 1.0, 0.9, 0.8]                     
+    1  [1.3, 1.2, 1.1, 1.0, 0.9]                     
+
+    twist  \
+    0  [30, 28, 25, 22, 20]                          
+    1  [32, 30, 27, 24, 22]                          
+
+    J  \
+    0  [0.2, 0.4, 0.6, 0.8, 1.0]                     
+    1  [0.2, 0.4, 0.6, 0.8, 1.0]                     
+
+    CT  \
+    0  [0.12, 0.11, 0.10, 0.09, 0.08]                
+    1  [0.13, 0.12, 0.11, 0.10, 0.09]                
+
+    CP  
+    0  [0.052, 0.050, 0.048, 0.046, 0.044]           
+    1  [0.054, 0.052, 0.050, 0.048, 0.046]           
+
+    (Note: The above is a representative example; actual values and column order may vary.)
+
+    """
+
+    df = pd.read_pickle("propeller_data_combined.pkl")
+    
     # These definitions will need to be handled by a different model architecture
-    feature_cols = ["radius", "chord", "twist", "diameter", "N_blades", "J"]
+    feature_cols = ["radius", "chord", "twist", "diameter", "N_blades", "J", "tip_mach"]
     target_cols = ["CT", "CP"]
     N_radial = len(df.iloc[0]["radius"])
-    
+
     return df, feature_cols, target_cols, N_radial
 
 
@@ -116,8 +152,8 @@ def prepare_data(df, feature_cols, target_cols):
     This function creates three sets of arrays:
     1. X_geom: A 3D array for the CNN (radius, chord, twist).
        Shape: (n_samples, 3, N_radial)
-    2. X_misc: A 2D array for the MLP (diameter, N_blades, J_array).
-       Shape: (n_samples, 2 + N_adv)
+    2. X_misc: A 2D array for the MLP (diameter, N_blades, tip_mach, J_array).
+       Shape: (n_samples, 3 + N_adv)
     3. y: A 2D array for the targets (CT, CP).
        Shape: (n_samples, 2 * N_adv)
     """
@@ -130,7 +166,7 @@ def prepare_data(df, feature_cols, target_cols):
     # Pre-allocate numpy arrays for efficiency
     n_samples = len(df)
     X_geom = np.zeros((n_samples, 3, N_radial), dtype=np.float32)
-    X_misc = np.zeros((n_samples, 2 + N_adv), dtype=np.float32)
+    X_misc = np.zeros((n_samples, 3 + N_adv), dtype=np.float32)
     y = np.zeros((n_samples, 2 * N_adv), dtype=np.float32)
 
     # Populate the arrays
@@ -139,7 +175,7 @@ def prepare_data(df, feature_cols, target_cols):
         X_geom[i, 1, :] = np.asarray(row["chord"], dtype=np.float32)
         X_geom[i, 2, :] = np.asarray(row["twist"], dtype=np.float32)
         
-        misc_scalars = np.array([row["diameter"], row["N_blades"]], dtype=np.float32)
+        misc_scalars = np.array([row["diameter"], row["N_blades"], row["tip_mach"]], dtype=np.float32)
         j_array = np.asarray(row["J"], dtype=np.float32)
         X_misc[i, :] = np.concatenate([misc_scalars, j_array])
 
@@ -181,26 +217,6 @@ def create_data_loaders(X_geom, X_misc, y, batch_size=256):
         torch.tensor(y)
     )
     return DataLoader(dataset, batch_size=batch_size, shuffle=True)
-
-class PropNet(nn.Module):
-    def __init__(self, n_radial, n_adv, hidden=128):
-        super().__init__()
-        self.cnn = nn.Sequential(
-            nn.Conv1d(3, 32, kernel_size=3, padding=1), nn.ReLU(),
-            nn.Conv1d(32, 64, kernel_size=3, padding=1), nn.ReLU(),
-            nn.AdaptiveAvgPool1d(1)            # → [B, 64, 1]
-        )
-        in_dense = 64 + 2 + n_adv              # 64 CNN feat + scalars + J array
-        self.mlp = nn.Sequential(
-            nn.Linear(in_dense, hidden), nn.ReLU(), nn.Dropout(0.2),
-            nn.Linear(hidden, 2*n_adv)
-        )
-
-    def forward(self, x_geom, x_misc):
-        # x_geom : [B, 3, N_radial]   (radius, chord, twist stacked on channel dim)
-        z = self.cnn(x_geom).squeeze(-1)       # [B, 64]
-        z = torch.cat([z, x_misc], dim=1)      # misc = [diam, N_blades, J...]
-        return self.mlp(z)
 
 
 def create_model(n_radial, n_adv):
@@ -313,59 +329,92 @@ def save_model_pipeline(model, misc_scaler, y_scaler, N_radial, N_adv):
         json.dump({ "N_radial": N_radial, "N_adv": N_adv }, f)
 
 
-def load_model_pipeline():
-    """Load the complete model pipeline for inference."""
-    # Load metadata
-    with open(os.path.join(out_dir, "meta.json"), "r") as f:
-        meta = json.load(f)
-    
-    # Load scalers
-    misc_scaler = joblib.load(os.path.join(out_dir, "misc_scaler.joblib"))
-    y_scaler = joblib.load(os.path.join(out_dir, "y_scaler.joblib"))
-    
-    # Create and load model
-    N_radial = meta['N_radial']
-    N_adv = meta['N_adv']
-    model = create_model(N_radial, N_adv)
-    model.load_state_dict(torch.load(os.path.join(out_dir, "propnet_weights.pt")))
-    model.eval()
-    
-    return model, misc_scaler, y_scaler, meta
+def check_data_distribution(df):
+    """
+    Check the distribution of the data.
+    """
+    # make histograms of each of the scalar features: diameter, N_blades, and tip_mach
+    scalar_features = ["diameter", "N_blades", "tip_mach"]
+    vector_features = ["radius", "chord", "twist", "J", "CT", "CP"]
+    for feature in scalar_features:
+        plt.figure()
+        plt.hist(df[feature], bins=20, edgecolor='black')
+        plt.title(f"Histogram of {feature}")
+        plt.xlabel(feature)
+        plt.ylabel("Count")
+        plt.grid(True, linestyle='--', alpha=0.5)
+        plt.tight_layout()
+        plt.show()
+    # output std, min, max, mean of each scalar feature
+    for feature in scalar_features:
+        print(f"Feature: {feature}")
+        print(f"Std: {df[feature].std()}")
+        print(f"Min: {df[feature].min()}")
+        print(f"Max: {df[feature].max()}")
+        print(f"Mean: {df[feature].mean()}")
+        print("\n")
 
+    fig, axs = plt.subplots(2, 1, figsize=(8, 10), sharex=True)
 
-def predict(model, misc_scaler, y_scaler, radius, chord, twist, diameter, N_blades, J_array):
-    """Make predictions for given propeller geometry and operating conditions."""
-    x_geom, x_misc = build_input_tensors(radius, chord, twist, diameter, N_blades, J_array)
-    
-    # Scale the misc features
-    x_misc_scaled = misc_scaler.transform(x_misc)
-    
-    with torch.no_grad():
-        y_hat_scaled = model(torch.tensor(x_geom), torch.tensor(x_misc_scaled)).numpy()
-    
-    # Inverse transform the prediction
-    y_hat = y_scaler.inverse_transform(y_hat_scaled)
-    
-    # Reshape back into separate CT and CP arrays
-    N_adv = len(J_array)
-    ct_pred, cp_pred = y_hat.reshape(2, N_adv)
-    return ct_pred, cp_pred
+    # Subplot 1: Radius vs Chord
+    for idx, row in df.iterrows():
+        radius = row['radius']
+        chord = row['chord']
+        axs[0].plot(radius, chord, alpha=0.5, label=f'Blade {idx}' if idx < 10 else None)
+    axs[0].set_ylabel('Chord')
+    axs[0].set_title('Radius vs Chord for Each Blade')
+    handles, labels = axs[0].get_legend_handles_labels()
+    if len(handles) > 0:
+        axs[0].legend()
+    axs[0].grid(True, linestyle='--', alpha=0.5)
 
+    # Subplot 2: Radius vs Twist
+    for idx, row in df.iterrows():
+        radius = row['radius']
+        twist = row['twist']
+        axs[1].plot(radius, twist, alpha=0.5, label=f'Blade {idx}' if idx < 10 else None)
+    axs[1].set_xlabel('Radius')
+    axs[1].set_ylabel('Twist')
+    axs[1].set_title('Radius vs Twist for Each Blade')
+    handles2, labels2 = axs[1].get_legend_handles_labels()
+    if len(handles2) > 0:
+        axs[1].legend()
+    axs[1].grid(True, linestyle='--', alpha=0.5)
 
-def build_input_tensors(radius, chord, twist, diameter, N_blades, J_array):
-    """Build the geometry and miscellaneous tensors for a single prediction."""
-    # Add a batch dimension of 1
-    x_geom = np.zeros((1, 3, len(radius)), dtype=np.float32)
-    x_geom[0, 0, :] = np.asarray(radius, dtype=np.float32)
-    x_geom[0, 1, :] = np.asarray(chord, dtype=np.float32)
-    x_geom[0, 2, :] = np.asarray(twist, dtype=np.float32)
+    plt.tight_layout()
+    plt.show()
 
-    misc_scalars = np.array([diameter, N_blades], dtype=np.float32)
-    j_array_np = np.asarray(J_array, dtype=np.float32)
-    x_misc = np.concatenate([misc_scalars, j_array_np]).reshape(1, -1)
-    
-    return x_geom, x_misc
+    # Plot J vs CT and J vs CP for each propeller
+    fig2, axs2 = plt.subplots(2, 1, figsize=(8, 10), sharex=True)
 
+    # Subplot 1: J vs CT
+    for idx, row in df.iterrows():
+        J = row['J']
+        CT = row['CT']
+        axs2[0].plot(J, CT, alpha=0.5, label=f'Blade {idx}' if idx < 10 else None)
+    axs2[0].set_ylabel('CT')
+    axs2[0].set_title('J vs CT for Each Blade')
+    handles_ct, labels_ct = axs2[0].get_legend_handles_labels()
+    if len(handles_ct) > 0:
+        axs2[0].legend()
+    axs2[0].grid(True, linestyle='--', alpha=0.5)
+
+    # Subplot 2: J vs CP
+    for idx, row in df.iterrows():
+        J = row['J']
+        CP = row['CP']
+        axs2[1].plot(J, CP, alpha=0.5, label=f'Blade {idx}' if idx < 10 else None)
+    axs2[1].set_xlabel('J')
+    axs2[1].set_ylabel('CP')
+    axs2[1].set_title('J vs CP for Each Blade')
+    handles_cp, labels_cp = axs2[1].get_legend_handles_labels()
+    if len(handles_cp) > 0:
+        axs2[1].legend()
+    axs2[1].grid(True, linestyle='--', alpha=0.5)
+
+    plt.tight_layout()
+    plt.show()
+    return
 
 def main():
     """Main training pipeline."""
@@ -373,7 +422,7 @@ def main():
     df, _, _, _ = read_data()
     if df is None:
         return
-
+    check_data_distribution(df)
     # First, diagnose the data for inconsistencies
     if not diagnose_data_homogeneity(df):
         print("Data is not homogeneous. Aborting training.")

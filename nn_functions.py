@@ -17,7 +17,7 @@ class PropNet(nn.Module):
             nn.Conv1d(32, 64, kernel_size=3, padding=1), nn.ReLU(),
             nn.AdaptiveAvgPool1d(1)            # → [B, 64, 1]
         )
-        in_dense = 64 + 2 + n_adv              # 64 CNN feat + scalars + J array
+        in_dense = 64 + 3 + n_adv              # 64 CNN feat + scalars + J array
         self.mlp = nn.Sequential(
             nn.Linear(in_dense, hidden), nn.ReLU(), nn.Dropout(0.2),
             nn.Linear(hidden, 2*n_adv)
@@ -26,7 +26,7 @@ class PropNet(nn.Module):
     def forward(self, x_geom, x_misc):
         # x_geom : [B, 3, N_radial]   (radius, chord, twist stacked on channel dim)
         z = self.cnn(x_geom).squeeze(-1)       # [B, 64]
-        z = torch.cat([z, x_misc], dim=1)      # misc = [diam, N_blades, J...]
+        z = torch.cat([z, x_misc], dim=1)      # misc = [diam, N_blades, tip_mach, J...]
         return self.mlp(z)
 
 def load_model_pipeline(model_dir="."):
@@ -70,7 +70,7 @@ def load_model_pipeline(model_dir="."):
         print("Please ensure 'meta.json', 'misc_scaler.joblib', 'y_scaler.joblib', and 'propnet_weights.pt' are in the specified directory.")
         return None, None, None, None
 
-def build_input_tensors(radius, chord, twist, diameter, N_blades, J_array):
+def build_input_tensors(radius, chord, twist, diameter, N_blades, J_array, tip_mach):
     """Build the geometry and miscellaneous tensors for a single prediction."""
     # Add a batch dimension of 1
     x_geom = np.zeros((1, 3, len(radius)), dtype=np.float32)
@@ -78,13 +78,13 @@ def build_input_tensors(radius, chord, twist, diameter, N_blades, J_array):
     x_geom[0, 1, :] = np.asarray(chord, dtype=np.float32)
     x_geom[0, 2, :] = np.asarray(twist, dtype=np.float32)
 
-    misc_scalars = np.array([diameter, N_blades], dtype=np.float32)
+    misc_scalars = np.array([diameter, N_blades, tip_mach], dtype=np.float32)
     j_array_np = np.asarray(J_array, dtype=np.float32)
     x_misc = np.concatenate([misc_scalars, j_array_np]).reshape(1, -1)
     
     return x_geom, x_misc
 
-def predict(model, misc_scaler, y_scaler, radius, chord, twist, diameter, N_blades, J_array):
+def predict(model, misc_scaler, y_scaler, radius, chord, twist, diameter, N_blades, J_array, tip_mach):
     """
     Makes a performance prediction for a single propeller.
     
@@ -96,7 +96,7 @@ def predict(model, misc_scaler, y_scaler, radius, chord, twist, diameter, N_blad
         A tuple of (ct_pred, cp_pred) numpy arrays.
     """
     # 1. Build the input tensors
-    x_geom, x_misc = build_input_tensors(radius, chord, twist, diameter, N_blades, J_array)
+    x_geom, x_misc = build_input_tensors(radius, chord, twist, diameter, N_blades, J_array, tip_mach)
     
     # 2. Scale the miscellaneous features
     x_misc_scaled = misc_scaler.transform(x_misc)
