@@ -1,3 +1,5 @@
+# download the UIUC Database from https://m-selig.ae.illinois.edu/props/download/UIUC-propDB.zip
+
 uiuc_dir = 'C:/Users/denriquez/Documents/CodingDojo/apcNN/UIUC-propDB/'
 
 import os
