@@ -19,12 +19,12 @@ from PySide6.QtWebEngineWidgets import QWebEngineView
 from bokeh.plotting import figure as bokeh_figure
 from bokeh.embed import file_html
 from bokeh.resources import CDN
-from bokeh.models import ColumnDataSource, HoverTool
+from bokeh.models import ColumnDataSource, HoverTool, Range1d
 
 from nn_functions import load_model_pipeline, predict
 
 # --- Custom Spline Editor Widget ---
-
+r_min = 0.15
 class SplineEditor(QWidget):
     """ A custom widget to edit a 5-point spline distribution interactively. """
     def __init__(self, title, y_min, y_max, initial_control_points, parent=None):
@@ -77,21 +77,24 @@ class SplineEditor(QWidget):
         # Draw ticks
         for i in range(6):
             x = p + i * (w - 2*p) / 5
-            painter.drawText(int(x - 5), h - p + 15, f"{i*0.2:.1f}")
+            tick_x_val = r_min + i * (1 - r_min) / 5
+            painter.drawText(int(x - 5), h - p + 15, f"{tick_x_val:.2f}")
             # Adjust tick labels for dynamic y-range
             tick_val = self.y_max - (self.y_max - self.y_min) * i / 5
             y = p + i * (h - 2*p) / 5
             painter.drawText(p - 25, int(y + 5), f"{tick_val:.2f}" if tick_val < 1 else f"{tick_val:.1f}")
 
     def _world_to_screen(self, p):
-        """ Converts world coordinates (0-1 x, y_min-y_max y) to screen pixels. """
-        x = self.padding + p.x() * (self.width() - 2 * self.padding)
+        """ Converts world coordinates ([r_min,1] x, y_min-y_max y) to screen pixels. """
+        x_norm = (p.x() - r_min) / (1 - r_min)
+        x = self.padding + x_norm * (self.width() - 2 * self.padding)
         y = self.padding + (1 - (p.y() - self.y_min) / (self.y_max - self.y_min)) * (self.height() - 2 * self.padding)
         return QPointF(x, y)
 
     def _screen_to_world(self, p):
-        """ Converts screen pixels to world coordinates. """
-        x = (p.x() - self.padding) / (self.width() - 2 * self.padding)
+        """ Converts screen pixels to world coordinates in [r_min,1]. """
+        x_norm = (p.x() - self.padding) / (self.width() - 2 * self.padding)
+        x = r_min + x_norm * (1 - r_min)
         y = self.y_min + (1 - (p.y() - self.padding) / (self.height() - 2 * self.padding)) * (self.y_max - self.y_min)
         return QPointF(x, y)
         
@@ -119,8 +122,7 @@ class SplineEditor(QWidget):
             painter.drawEllipse(sp, 3, 3)
 
         # Draw smooth spline curve
-        x_fine = np.linspace(0, 1, 100)
-        _, y_fine = self.get_discretized_values(100)
+        x_fine, y_fine = self.get_discretized_values(100)
         fine_points = [self._world_to_screen(QPointF(x,y)) for x,y in zip(x_fine, y_fine)]
         painter.setPen(QPen(QColor("#3333AA"), 2))
         painter.drawPolyline(QPolygonF(fine_points))
@@ -138,7 +140,7 @@ class SplineEditor(QWidget):
             new_world_pos = self._screen_to_world(event.position())
             
             # Clamp values to be within bounds
-            new_x = np.clip(new_world_pos.x(), 0, 1)
+            new_x = np.clip(new_world_pos.x(), r_min, 1)
             new_y = np.clip(new_world_pos.y(), self.y_min, self.y_max)
             
             # Prevent x-values from crossing over neighbors
@@ -162,7 +164,7 @@ class SplineEditor(QWidget):
         # Use scipy to create a 3rd degree B-spline
         spline = make_interp_spline(x, y, k=3)
         
-        x_out = np.linspace(0, 1, num_points)
+        x_out = np.linspace(r_min, 1, num_points)
         y_out = spline(x_out)
         
         return x_out, y_out
@@ -193,8 +195,8 @@ class MainWindow(QMainWindow):
         left_layout = QVBoxLayout()
         
         # Define default propeller geometry
-        default_chord_points = [(0.0, 0.05), (0.25, 0.18), (0.5, 0.15), (0.75, 0.10), (1.0, 0.05)]
-        default_twist_points = [(0.0, 40.0), (0.25, 35.0), (0.5, 25.0), (0.75, 18.0), (1.0, 12.0)]
+        default_chord_points = [(r_min, 0.16), (0.25, 0.15), (0.5, 0.15), (0.75, 0.10), (1.0, 0.05)]
+        default_twist_points = [(r_min, 30.0), (0.25, 35.0), (0.5, 25.0), (0.75, 18.0), (1.0, 12.0)]
 
         # Chord editor
         chord_box = QGroupBox("Chord Distribution (c/D)")
@@ -213,21 +215,20 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(twist_box)
 
         # Scalar inputs
+        range_diameter = [2, 12]
+        range_n_blades = [2, 3]
         scalar_box = QGroupBox("Global Parameters")
         scalar_layout = QHBoxLayout()
         self.diameter_input = QDoubleSpinBox()
-        self.diameter_input.setRange(2, 30); self.diameter_input.setValue(12)
+        self.diameter_input.setRange(range_diameter[0], range_diameter[1]); self.diameter_input.setValue(5)
         self.n_blades_input = QSpinBox()
-        self.n_blades_input.setRange(1, 8); self.n_blades_input.setValue(2)
-        self.tip_mach_input = QDoubleSpinBox()
-        self.tip_mach_input.setRange(0.1, 1.5); self.tip_mach_input.setValue(0.7); self.tip_mach_input.setSingleStep(0.05)
+        self.n_blades_input.setRange(range_n_blades[0], range_n_blades[1]); self.n_blades_input.setValue(2)
         
         scalar_layout.addWidget(QLabel("Diameter (in):"))
         scalar_layout.addWidget(self.diameter_input)
         scalar_layout.addWidget(QLabel("Num Blades:"))
         scalar_layout.addWidget(self.n_blades_input)
-        scalar_layout.addWidget(QLabel("Tip Mach:"))
-        scalar_layout.addWidget(self.tip_mach_input)
+        # Tip Mach removed from inputs; model expects solidity computed internally
         scalar_box.setLayout(scalar_layout)
         left_layout.addWidget(scalar_box)
         
@@ -263,6 +264,7 @@ class MainWindow(QMainWindow):
             x_axis_label="Advance Ratio (J)",
             y_axis_label="Coefficient"
         )
+        p.y_range = Range1d(-0.1, 0.25)
         p.add_tools(HoverTool(tooltips=[("J", "@x{0.00}"), ("Value", "@y{0.0000}")]))
         html = file_html(p, CDN, "Performance Plot")
         self.plot_view.setHtml(html)
@@ -271,9 +273,9 @@ class MainWindow(QMainWindow):
     def run_prediction(self):
         """ Gathers data from UI, runs model, and updates plot. """
         # 1. Get scalar values from inputs
-        diameter = self.diameter_input.value()
+        diameter = self.diameter_input.value() * 0.0254 # convert to meters
         n_blades = self.n_blades_input.value()
-        tip_mach = self.tip_mach_input.value()
+        # Tip Mach no longer used
 
         # 2. Get geometry from spline editors
         radius, chord = self.chord_editor.get_discretized_values(self.N_radial)
@@ -284,17 +286,18 @@ class MainWindow(QMainWindow):
         j_array = np.linspace(0.01, 1.5, self.N_adv)
 
         # 4. Run prediction
+        norm_chord = 0.5
+        norm_twist = 100
         ct_pred, cp_pred = predict(
             model=self.model,
             misc_scaler=self.misc_scaler,
             y_scaler=self.y_scaler,
             radius=radius,
-            chord=chord,
-            twist=twist,
+            chord=chord / norm_chord,
+            twist=twist / norm_twist,
             diameter=diameter,
-            n_blades=n_blades,
-            J_array=j_array,
-            tip_mach=tip_mach
+            N_blades=n_blades,
+            J_array=j_array
         )
 
         # 5. Update the plot with new data
@@ -308,6 +311,7 @@ class MainWindow(QMainWindow):
                 ("J", "@x{0.00}"),
                 ("CT", "@ct{0.0000}"),
                 ("CP", "@cp{0.0000}"),
+                ("Efficiency/10", "@eta10{0.0000}"),
             ],
             mode='vline' # Show tooltips for all lines at a given x-position
         )
@@ -320,13 +324,20 @@ class MainWindow(QMainWindow):
             x_axis_label="Advance Ratio (J)",
             y_axis_label="Coefficient"
         )
+        p.y_range = Range1d(-0.1, 0.2)
         p.add_tools(hover)
 
         # 3. Create a ColumnDataSource for efficient data handling
+        # Compute efficiency scaled by 10, guard against division by zero
+        cp_safe = np.where(np.abs(cp) < 1e-8, np.nan, cp)
+        ct_safe = np.where(ct < 0, 0, ct)
+        eta10 = (ct_safe * j) / cp_safe / 10.0
+
         source = ColumnDataSource(data={
             'x': j,
             'ct': ct,
-            'cp': cp
+            'cp': cp,
+            'eta10': eta10
         })
         
         # 4. Add line and circle renderers to the plot
@@ -335,6 +346,10 @@ class MainWindow(QMainWindow):
 
         p.line(x='x', y='cp', source=source, legend_label="Predicted CP", color="orangered", line_width=2, line_dash="dashed")
         p.circle(x='x', y='cp', source=source, color="orangered", size=5, legend_label="Predicted CP")
+
+        # Efficiency line (eta/10)
+        p.line(x='x', y='eta10', source=source, legend_label="eff./10", color="seagreen", line_width=2, line_dash="dotdash")
+        p.circle(x='x', y='eta10', source=source, color="seagreen", size=5, legend_label="eff./10")
 
         # 5. Configure the legend
         p.legend.location = "top_right"
