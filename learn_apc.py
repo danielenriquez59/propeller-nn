@@ -12,7 +12,7 @@ import ast, os
 import pdb
 import matplotlib.pyplot as plt
 
-from nn_functions import PropNet, build_input_tensors, predict, load_model_pipeline
+from nn_functions import PropNet, calculate_solidity
 
 out_dir = "model_weights"
 
@@ -136,24 +136,24 @@ def read_data():
     """
 
     df = pd.read_pickle("propeller_data_combined.pkl")
-    
+    # calcualte solidity for each row
+    df["solidity"] = df.apply(lambda row: calculate_solidity(row["chord"], row["diameter"], row["N_blades"]), axis=1)
     # These definitions will need to be handled by a different model architecture
-    feature_cols = ["radius", "chord", "twist", "diameter", "N_blades", "J", "tip_mach"]
+    feature_cols = ["radius", "chord", "twist", "diameter", "N_blades", "J"]
     target_cols = ["CT", "CP"]
     N_radial = len(df.iloc[0]["radius"])
 
-    return df, feature_cols, target_cols, N_radial
+    return df
 
-
-def prepare_data(df, feature_cols, target_cols):
+def prepare_data(df):
     """
     Transforms the DataFrame into structured numpy arrays for CNN-based training.
 
     This function creates three sets of arrays:
     1. X_geom: A 3D array for the CNN (radius, chord, twist).
        Shape: (n_samples, 3, N_radial)
-    2. X_misc: A 2D array for the MLP (diameter, N_blades, tip_mach, J_array).
-       Shape: (n_samples, 3 + N_adv)
+    2. X_misc: A 2D array for the MLP (N_blades, diameter, J_array).
+       Shape: (n_samples, 2 + N_adv)
     3. y: A 2D array for the targets (CT, CP).
        Shape: (n_samples, 2 * N_adv)
     """
@@ -166,16 +166,18 @@ def prepare_data(df, feature_cols, target_cols):
     # Pre-allocate numpy arrays for efficiency
     n_samples = len(df)
     X_geom = np.zeros((n_samples, 3, N_radial), dtype=np.float32)
-    X_misc = np.zeros((n_samples, 3 + N_adv), dtype=np.float32)
+    X_misc = np.zeros((n_samples, 2 + N_adv), dtype=np.float32)
     y = np.zeros((n_samples, 2 * N_adv), dtype=np.float32)
 
     # Populate the arrays
     for i, (_, row) in enumerate(df.iterrows()):
+        norm_chord = 0.5
+        norm_twist = 100
         X_geom[i, 0, :] = np.asarray(row["radius"], dtype=np.float32)
-        X_geom[i, 1, :] = np.asarray(row["chord"], dtype=np.float32)
-        X_geom[i, 2, :] = np.asarray(row["twist"], dtype=np.float32)
+        X_geom[i, 1, :] = np.asarray(row["chord"], dtype=np.float32)  / norm_chord
+        X_geom[i, 2, :] = np.asarray(row["twist"], dtype=np.float32) / norm_twist
         
-        misc_scalars = np.array([row["diameter"], row["N_blades"], row["tip_mach"]], dtype=np.float32)
+        misc_scalars = np.array([row["N_blades"], row["diameter"]], dtype=np.float32)
         j_array = np.asarray(row["J"], dtype=np.float32)
         X_misc[i, :] = np.concatenate([misc_scalars, j_array])
 
@@ -208,7 +210,6 @@ def prepare_data(df, feature_cols, target_cols):
     return (X_geom_train, X_misc_train, X_geom_val, X_misc_val, X_geom_test, X_misc_test,
             y_train, y_val, y_test, misc_scaler, y_scaler)
 
-
 def create_data_loaders(X_geom, X_misc, y, batch_size=256):
     """Create PyTorch data loaders for training and validation."""
     dataset = TensorDataset(
@@ -218,14 +219,12 @@ def create_data_loaders(X_geom, X_misc, y, batch_size=256):
     )
     return DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
-
 def create_model(n_radial, n_adv):
     """Create and initialize the PropNet model."""
     model = PropNet(n_radial=n_radial, n_adv=n_adv)
     return model
 
-
-def train_model(model,train_loader,X_geom_val,X_misc_val,y_val,epochs=1000,lr=2e-3,weight_decay=1e-4,patience=300):
+def train_model(model,train_loader,X_geom_val,X_misc_val,y_val,epochs=600,lr=2e-3,weight_decay=1e-4,patience=300):
     """
     Train the model with early stopping and an adaptive learning rate.
 
@@ -287,7 +286,6 @@ def train_model(model,train_loader,X_geom_val,X_misc_val,y_val,epochs=1000,lr=2e
     
     return model
 
-
 def evaluate_model(model, X_geom_test, X_misc_test, y_test, y_scaler, N_adv):
     """Evaluate the trained model on test set."""
     # Load best model weights
@@ -318,7 +316,6 @@ def evaluate_model(model, X_geom_test, X_misc_test, y_test, y_scaler, N_adv):
     
     return y_pred, y_true, mae_ct, mae_cp, r2_ct, r2_cp
 
-
 def save_model_pipeline(model, misc_scaler, y_scaler, N_radial, N_adv):
     """Save the complete model pipeline for inference."""
     torch.save(model.state_dict(), os.path.join(out_dir, "propnet_weights.pt"))
@@ -328,13 +325,12 @@ def save_model_pipeline(model, misc_scaler, y_scaler, N_radial, N_adv):
     with open(os.path.join(out_dir, "meta.json"), "w") as f:
         json.dump({ "N_radial": N_radial, "N_adv": N_adv }, f)
 
-
 def check_data_distribution(df):
     """
     Check the distribution of the data.
     """
     # make histograms of each of the scalar features: diameter, N_blades, and tip_mach
-    scalar_features = ["diameter", "N_blades", "tip_mach"]
+    scalar_features = ["diameter", "N_blades", "tip_mach", "solidity"]
     vector_features = ["radius", "chord", "twist", "J", "CT", "CP"]
     for feature in scalar_features:
         plt.figure()
@@ -419,10 +415,11 @@ def check_data_distribution(df):
 def main():
     """Main training pipeline."""
     print("Loading data...")
-    df, _, _, _ = read_data()
+    df = read_data()
     if df is None:
         return
-    check_data_distribution(df)
+    # check_data_distribution(df)
+
     # First, diagnose the data for inconsistencies
     if not diagnose_data_homogeneity(df):
         print("Data is not homogeneous. Aborting training.")
@@ -433,7 +430,7 @@ def main():
 
     print("Preparing data...")
     (X_geom_train, X_misc_train, X_geom_val, X_misc_val, X_geom_test, X_misc_test,
-     y_train, y_val, y_test, misc_scaler, y_scaler) = prepare_data(df, None, None)
+     y_train, y_val, y_test, misc_scaler, y_scaler) = prepare_data(df)
     
     print("Creating data loaders...")
     train_loader = create_data_loaders(X_geom_train, X_misc_train, y_train)
