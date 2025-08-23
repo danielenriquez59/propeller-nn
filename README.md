@@ -76,3 +76,9 @@ python run_model.py
 4. `model_weights/`: The default directory containing the trained model (`propnet_weights.pt`), metadata (`meta.json`), and data scalers (`.joblib` files).
 5. `run_model.py`: A command-line script to perform a single prediction.
 6. `gui_apc_nn.py`: The main entry point for the interactive GUI application.
+
+## Propeller Design GUI
+The Propeller Design GUI provides an intuitive interface for users to design and evaluate propeller performance. With this GUI, users can easily adjust the chord and twist distributions of a propeller by dragging control points on the plot. The interface allows for real-time updates, enabling users to instantly visualize the effects of their modifications on the thrust (`CT`) and power (`CP`) coefficients. Additionally, users can specify the propeller's diameter and the number of blades, making it a versatile tool for various design scenarios. The interactive plot supports zooming, panning, and hovering over data points to display detailed values, enhancing the user experience and providing valuable insights into propeller performance characteristics.
+
+![Propeller Design GUI Screenshot](images/gui_screenshot.png)
+
