@@ -100,4 +100,12 @@ if __name__ == '__main__':
         # No grid lines
         plt.show()
 
+        plt.figure(figsize=(8, 5))
+        plt.plot(actual_data['J'], actual_data['CP'], label='APC Wind tunnel data', marker='o')
+        plt.plot(results_df['J (Advance Ratio)'], results_df['Predicted CP'], label='APC_NN', marker='x')
+        plt.xlabel('Advance Ratio (J)')
+        plt.ylabel('Power Coefficient (CP)')
+        plt.title('APC Wind tunnel data vs APC_NN')
+        plt.legend()
+        plt.show()
         pdb.set_trace()

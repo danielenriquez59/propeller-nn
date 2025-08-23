@@ -27,12 +27,16 @@ from nn_functions import load_model_pipeline, predict
 r_min = 0.15
 class SplineEditor(QWidget):
     """ A custom widget to edit a 5-point spline distribution interactively. """
-    def __init__(self, title, y_min, y_max, initial_control_points, parent=None):
+    def __init__(self, title, y_min, y_max, initial_control_points, parent=None,
+                 envelope_x=None, envelope_ymin=None, envelope_ymax=None):
         super().__init__(parent)
         self.setMinimumSize(400, 250)
         self.title = title
         self.y_min = y_min
         self.y_max = y_max
+        self.envelope_x = envelope_x
+        self.envelope_ymin = envelope_ymin
+        self.envelope_ymax = envelope_ymax
         
         # Initialize 5 control points from the provided defaults
         self.control_points = [QPointF(x, y) for x, y in initial_control_points]
@@ -121,6 +125,14 @@ class SplineEditor(QWidget):
         for sp in spline_screen_points:
             painter.drawEllipse(sp, 3, 3)
 
+        # Draw envelope lines if provided
+        if self.envelope_x is not None and self.envelope_ymin is not None and self.envelope_ymax is not None:
+            env_min_points = [self._world_to_screen(QPointF(x, y)) for x, y in zip(self.envelope_x, self.envelope_ymin)]
+            env_max_points = [self._world_to_screen(QPointF(x, y)) for x, y in zip(self.envelope_x, self.envelope_ymax)]
+            painter.setPen(QPen(QColor("#888888"), 1, Qt.PenStyle.DotLine))
+            painter.drawPolyline(QPolygonF(env_min_points))
+            painter.drawPolyline(QPolygonF(env_max_points))
+
         # Draw smooth spline curve
         x_fine, y_fine = self.get_discretized_values(100)
         fine_points = [self._world_to_screen(QPointF(x,y)) for x,y in zip(x_fine, y_fine)]
@@ -194,22 +206,38 @@ class MainWindow(QMainWindow):
         # -- Left side: Inputs --
         left_layout = QVBoxLayout()
         
+        # Load envelopes
+        env = read_envelope()
+        env_x = np.linspace(r_min, 1, len(env["chord_min"]))
+
         # Define default propeller geometry
         default_chord_points = [(r_min, 0.16), (0.25, 0.15), (0.5, 0.15), (0.75, 0.10), (1.0, 0.05)]
         default_twist_points = [(r_min, 30.0), (0.25, 35.0), (0.5, 25.0), (0.75, 18.0), (1.0, 12.0)]
 
         # Chord editor
-        chord_box = QGroupBox("Chord Distribution (c/D)")
+        chord_y_range = [0, 0.4]
+        chord_box = QGroupBox("Chord Distribution (c/R)")
         chord_layout = QVBoxLayout()
-        self.chord_editor = SplineEditor("Chord", 0, 0.3, default_chord_points)
+        self.chord_editor = SplineEditor(
+            "Chord", chord_y_range[0], chord_y_range[1], default_chord_points,
+            envelope_x=env_x,
+            envelope_ymin=np.array(env["chord_min"], dtype=float),
+            envelope_ymax=np.array(env["chord_max"], dtype=float)
+        )
         chord_layout.addWidget(self.chord_editor)
         chord_box.setLayout(chord_layout)
         left_layout.addWidget(chord_box)
         
         # Twist editor
+        twist_y_range = [0, 60]
         twist_box = QGroupBox("Twist Distribution (degrees)")
         twist_layout = QVBoxLayout()
-        self.twist_editor = SplineEditor("Twist", 0, 60, default_twist_points)
+        self.twist_editor = SplineEditor(
+            "Twist", twist_y_range[0], twist_y_range[1], default_twist_points,
+            envelope_x=env_x,
+            envelope_ymin=np.array(env["twist_min"], dtype=float),
+            envelope_ymax=np.array(env["twist_max"], dtype=float)
+        )
         twist_layout.addWidget(self.twist_editor)
         twist_box.setLayout(twist_layout)
         left_layout.addWidget(twist_box)
@@ -348,8 +376,8 @@ class MainWindow(QMainWindow):
         p.circle(x='x', y='cp', source=source, color="orangered", size=5, legend_label="Predicted CP")
 
         # Efficiency line (eta/10)
-        p.line(x='x', y='eta10', source=source, legend_label="eff./10", color="seagreen", line_width=2, line_dash="dotdash")
-        p.circle(x='x', y='eta10', source=source, color="seagreen", size=5, legend_label="eff./10")
+        p.line(x='x', y='eta10', source=source, legend_label="Efficiency/10", color="seagreen", line_width=2, line_dash="dotdash")
+        p.circle(x='x', y='eta10', source=source, color="seagreen", size=5, legend_label="Efficiency/10")
 
         # 5. Configure the legend
         p.legend.location = "top_right"
@@ -359,6 +387,14 @@ class MainWindow(QMainWindow):
         html = file_html(p, CDN, "Prop Performance")
         self.plot_view.setHtml(html)
 
+def read_envelope():
+    """
+    Read the envelope from the json file.
+    Keys are: chord_min, chord_max, twist_min, twist_max
+    """
+    with open("chord_envelope.json", "r") as f:
+        data = json.load(f)
+    return data
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
