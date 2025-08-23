@@ -35,12 +35,12 @@ if __name__ == '__main__':
         norm_chord = 0.5
         norm_twist = 100
         unsampled_chord = np.array([0.160, 0.146, 0.144, 0.143, 0.143, 0.146, 0.151, 0.155, 0.158, 0.160, 0.159, 0.155, 0.146, 0.133, 0.114, 0.089, 0.056, 0.022]) / norm_chord
-        example_chord = np.interp(np.linspace(0, 1, N_radial_expected), np.linspace(0, 1, len(unsampled_chord)), unsampled_chord)
+        example_chord = np.interp(example_radius, np.linspace(0, 1, len(unsampled_chord)), unsampled_chord)
         
         unsampled_twist = np.array([31.68, 34.45, 35.93, 33.33, 29.42, 26.25, 23.67, 21.65, 20.02, 18.49, 17.06, 15.95, 14.87, 13.82, 12.77, 11.47, 10.15, 8.82]) / norm_twist
 
-        example_twist = np.interp(np.linspace(0, 1, N_radial_expected), np.linspace(0, 1, len(unsampled_twist)), unsampled_twist)
-        example_diameter = 5 * 0.0254
+        example_twist = np.interp(example_radius, np.linspace(0, 1, len(unsampled_twist)), unsampled_twist)
+        example_diameter = 5 * 0.0254 # convert to meters
         example_n_blades = 2
         example_j_array = np.linspace(0.1, 0.8, N_adv_expected)
         example_tip_mach = 0.21
@@ -50,13 +50,15 @@ if __name__ == '__main__':
 
         # 3. Run the prediction
         predicted_ct, predicted_cp = predict(
-            model, misc_scaler, y_scaler,
-            example_radius,
-            example_chord,
-            example_twist,
-            example_n_blades,
-            example_diameter,
-            example_j_array
+            model=model, 
+            misc_scaler=misc_scaler, 
+            y_scaler=y_scaler,
+            radius=example_radius,
+            chord=example_chord,
+            twist=example_twist,
+            N_blades=example_n_blades,
+            diameter=example_diameter,
+            J_array=example_j_array
         )
 
         # 4. Print the results
