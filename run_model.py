@@ -30,16 +30,17 @@ if __name__ == '__main__':
 
         # Example geometry and operating conditions
         # apc29ff_9x5_geom
-        example_radius = np.linspace(0.15, 1.0, N_radial_expected)
+        min_radius = 0.15
+        max_radius = 1.0
+        example_radius = np.linspace(min_radius, max_radius, N_radial_expected)
         
         norm_chord = 0.5
         norm_twist = 100
         unsampled_chord = np.array([0.160, 0.146, 0.144, 0.143, 0.143, 0.146, 0.151, 0.155, 0.158, 0.160, 0.159, 0.155, 0.146, 0.133, 0.114, 0.089, 0.056, 0.022]) / norm_chord
-        example_chord = np.interp(example_radius, np.linspace(0, 1, len(unsampled_chord)), unsampled_chord)
+        example_chord = np.interp(example_radius, np.linspace(min_radius, max_radius, len(unsampled_chord)), unsampled_chord)
         
         unsampled_twist = np.array([31.68, 34.45, 35.93, 33.33, 29.42, 26.25, 23.67, 21.65, 20.02, 18.49, 17.06, 15.95, 14.87, 13.82, 12.77, 11.47, 10.15, 8.82]) / norm_twist
-
-        example_twist = np.interp(example_radius, np.linspace(0, 1, len(unsampled_twist)), unsampled_twist)
+        example_twist = np.interp(example_radius, np.linspace(min_radius, max_radius, len(unsampled_twist)), unsampled_twist)
         example_diameter = 5 * 0.0254 # convert to meters
         example_n_blades = 2
         example_j_array = np.linspace(0.1, 0.8, N_adv_expected)
