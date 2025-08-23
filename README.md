@@ -69,11 +69,10 @@ python run_model.py
 
 ## File Structure
 
-- `process_data.py`: Process data processes the UIUC database. Currently misses some 
-- `gui_apc_nn.py`: The main entry point for the interactive GUI application.
-- `learn_apc.py`: The script used to train the neural network model.
-- `run_model.py`: A command-line script to perform a single prediction.
-- `nn_functions.py`: A core module containing the `PropNet` class definition and shared functions for loading the model and making predictions.
-- `requirements.txt`: A list of all Python dependencies for the project.
-- `model_weights/`: The default directory containing the trained model (`propnet_weights.pt`), metadata (`meta.json`), and data scalers (`.joblib` files).
-- `propeller_data_combined.csv`: The raw dataset used for training.
+0. `requirements.txt`: A list of all Python dependencies for the project.
+1. `process_data.py`: Process data processes the UIUC database. Currently misses some 
+2. `nn_functions.py`: A core module containing the `PropNet` class definition and shared functions for loading the model and making predictions.
+3. `learn_apc.py`: The script used to train the neural network model.
+4. `model_weights/`: The default directory containing the trained model (`propnet_weights.pt`), metadata (`meta.json`), and data scalers (`.joblib` files).
+5. `run_model.py`: A command-line script to perform a single prediction.
+6. `gui_apc_nn.py`: The main entry point for the interactive GUI application.
