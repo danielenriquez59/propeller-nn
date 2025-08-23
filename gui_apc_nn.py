@@ -19,7 +19,7 @@ from PySide6.QtWebEngineWidgets import QWebEngineView
 from bokeh.plotting import figure as bokeh_figure
 from bokeh.embed import file_html
 from bokeh.resources import CDN
-from bokeh.models import ColumnDataSource, HoverTool, Range1d
+from bokeh.models import ColumnDataSource, HoverTool, Range1d, Label
 
 from nn_functions import load_model_pipeline, predict
 
@@ -205,6 +205,14 @@ class MainWindow(QMainWindow):
 
         # -- Left side: Inputs --
         left_layout = QVBoxLayout()
+        # Instructions banner
+        instructions = QLabel(
+            "Move the chord and twist control points to design your propeller.\n"
+            "Adjust Diameter and Num Blades, then click 'Predict Performance' to update the plot."
+        )
+        instructions.setWordWrap(True)
+        instructions.setStyleSheet("color: #444; font-size: 11pt; padding: 6px;")
+        left_layout.addWidget(instructions)
         
         # Load envelopes
         env = read_envelope()
@@ -352,7 +360,7 @@ class MainWindow(QMainWindow):
             x_axis_label="Advance Ratio (J)",
             y_axis_label="Coefficient"
         )
-        p.y_range = Range1d(-0.1, 0.2)
+        p.y_range = Range1d(-0.1, 0.25)  
         p.add_tools(hover)
 
         # 3. Create a ColumnDataSource for efficient data handling
@@ -378,6 +386,24 @@ class MainWindow(QMainWindow):
         # Efficiency line (eta/10)
         p.line(x='x', y='eta10', source=source, legend_label="Efficiency/10", color="seagreen", line_width=2, line_dash="dotdash")
         p.circle(x='x', y='eta10', source=source, color="seagreen", size=5, legend_label="Efficiency/10")
+
+        # Add label for J at maximum efficiency (eta/10)
+        try:
+            idx_max = int(np.nanargmax(eta10))
+            j_max = float(j[idx_max])
+            eta10_max = float(eta10[idx_max])
+            # Place label slightly above the point within y-range
+            y_start, y_end = p.y_range.start, p.y_range.end
+            y_label = min(max(eta10_max + 0.02, y_start), y_end)
+            label = Label(x=j_max, y=y_label,
+                          x_units='data', y_units='data',
+                          text=f"Max eff at J={j_max:.2f}",
+                          text_color="seagreen", text_font_size="10pt",
+                          background_fill_color="white", background_fill_alpha=0.6,
+                          border_line_color=None)
+            p.add_layout(label)
+        except (ValueError, IndexError):
+            pass
 
         # 5. Configure the legend
         p.legend.location = "top_right"
