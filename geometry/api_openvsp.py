@@ -51,5 +51,3 @@ if __name__ == "__main__":
         raise FileNotFoundError(f"BEM file not found: {bem_path}")
     prop_id = send_bem_to_vsp(bem_path)
     print("Imported Prop ID:", prop_id)
-    if openvsp_config.LOAD_GRAPHICS:
-        pdb.set_trace()
