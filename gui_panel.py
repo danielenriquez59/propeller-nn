@@ -10,7 +10,6 @@ from bokeh.models import (
     ColumnDataSource,
     HoverTool,
     Range1d,
-    Label,
     PointDrawTool,
 )
 
@@ -372,25 +371,7 @@ class PropellerApp:
         # Update source
         self.performance_source.data = dict(x=j_array, ct=ct_pred, cp=cp_pred, eta10=eta10)
 
-        # Label for max efficiency
-        try:
-            idx_max = int(np.nanargmax(eta10))
-            j_max = float(j_array[idx_max])
-            eta10_max = float(eta10[idx_max])
-            # Remove previous labels
-            self.performance_figure.renderers = [r for r in self.performance_figure.renderers if not isinstance(r, Label)]
-            label = Label(
-                x=j_max,
-                y=min(max(eta10_max + 0.02, self.performance_figure.y_range.start), self.performance_figure.y_range.end),
-                text=f"Max eff at J={j_max:.2f}",
-                text_color="seagreen",
-                text_font_size="10pt",
-                background_fill_color="white",
-                background_fill_alpha=0.6,
-            )
-            self.performance_figure.add_layout(label)
-        except (ValueError, IndexError):
-            pass
+        # no label added
 
     def _on_write_bem_clicked(self, *_):
         name = (self.filename_input.value or "").strip()
