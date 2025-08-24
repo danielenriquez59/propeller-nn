@@ -122,7 +122,7 @@ def main():
     # Save the single combined DataFrame
     performance = performance[performance['geom_filename'].notna()]
     # Write the combined DataFrame to CSV for easy inspection
-    performance.to_csv('propeller_data_combined.csv', index=False)
+    # performance.to_csv('propeller_data_combined.csv', index=False)
     performance.to_pickle('propeller_data_combined.pkl')
     print("done processing data")
     return
