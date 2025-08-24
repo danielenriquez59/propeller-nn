@@ -3,6 +3,7 @@ openvsp_config.LOAD_GRAPHICS = True
 openvsp_config.LOAD_FACADE = True
 import openvsp as vsp
 import os, pdb, time
+import sys
 
 
 def send_bem_to_vsp(bem_path: str):
@@ -13,8 +14,8 @@ def send_bem_to_vsp(bem_path: str):
     Returns:
         str: The imported propeller geometry ID.
     """
-    if not vsp.IsGUIBuild():
-        raise RuntimeError("This OpenVSP build does not include GUI support.")
+    # if not vsp.IsGUIBuild():
+    #     raise RuntimeError("This OpenVSP build does not include GUI support.")
 
     vsp.InitGUI()
     vsp.ClearVSPModel()
@@ -38,6 +39,7 @@ def send_bem_to_vsp(bem_path: str):
 
     if openvsp_config.LOAD_GRAPHICS:
         vsp.StartGUI()
+        vsp.FitAllViews()
         vsp.SetShowBorders(False)
         vsp.SetViewAxis(False)
 
@@ -45,9 +47,17 @@ def send_bem_to_vsp(bem_path: str):
 
 
 if __name__ == "__main__":
-    # Test with APC prop BEM created by create_geomety.py
-    bem_path = os.path.join(os.path.dirname(__file__), "apc29ff_9x5_geom.bem")
+    # Accept BEM file path from system argument, default to apc29ff_9x5_geom.bem if not provided
+    # system arguments PORT and BEM_PATH
+    # example : python .\api_openvsp.py  1000 ../test.bem
+
+    if len(sys.argv) > 3:
+        bem_path = os.path.join(os.path.dirname(__file__), sys.argv[3])
+    else:
+        bem_path = os.path.join(os.path.dirname(__file__), "apc29ff_9x5_geom.bem")
     if not os.path.isfile(bem_path):
         raise FileNotFoundError(f"BEM file not found: {bem_path}")
+
     prop_id = send_bem_to_vsp(bem_path)
     print("Imported Prop ID:", prop_id)
+    pdb.set_trace()

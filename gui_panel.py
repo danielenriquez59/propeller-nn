@@ -1,4 +1,4 @@
-import json
+import json, os
 import numpy as np
 from typing import Tuple, Optional
 
@@ -15,6 +15,8 @@ from bokeh.models import (
 )
 
 from nn_functions import load_model_pipeline, predict
+from geometry.create_geomety import create_bem_file
+from geometry.api_openvsp import send_bem_to_vsp
 
 
 # Global configuration
@@ -242,10 +244,19 @@ class PropellerApp:
         )
 
         # Controls
-        self.diameter_input = pn.widgets.FloatInput(name="Diameter (in)", value=5.0, start=2.0, end=12.0, step=0.1)
+        self.diameter_input = pn.widgets.FloatInput(name="Diameter (in)", value=5.0, start=2.0, end=12.0, step=0.25)
+        self.diameter_input.styles = {"width": "200px", "min-width": "200px", "max-width": "200px"}
         self.num_blades_input = pn.widgets.IntInput(name="Num Blades", value=2, start=2, end=3, step=1)
+        self.num_blades_input.styles = {"width": "200px", "min-width": "200px", "max-width": "200px"}
         self.predict_button = pn.widgets.Button(name="Predict Performance", button_type="primary")
         self.predict_button.on_click(self._on_predict_clicked)
+
+        # Export controls
+        self.filename_input = pn.widgets.TextInput(name="BEM Filename", placeholder="e.g., my_prop")
+        self.run_openvsp_checkbox = pn.widgets.Checkbox(name="Run OpenVSP after write", value=False)
+        self.write_bem_button = pn.widgets.Button(name="Write BEM", button_type="success")
+        self.write_bem_button.on_click(self._on_write_bem_clicked)
+        self.export_status = pn.pane.Markdown("", sizing_mode="stretch_width")
 
         # Performance figure
         self.performance_source = ColumnDataSource(data=dict(x=[], ct=[], cp=[], eta10=[]))
@@ -267,6 +278,16 @@ class PropellerApp:
                     collapsible=False,
                 ),
                 self.predict_button,
+                pn.Card(
+                    pn.Column(
+                        self.filename_input,
+                        self.run_openvsp_checkbox,
+                        self.write_bem_button,
+                        self.export_status,
+                    ),
+                    title="Export / OpenVSP",
+                    collapsible=False,
+                ),
                 sizing_mode="stretch_height",
                 width=560,
             ),
@@ -370,6 +391,48 @@ class PropellerApp:
             self.performance_figure.add_layout(label)
         except (ValueError, IndexError):
             pass
+
+    def _on_write_bem_clicked(self, *_):
+        name = (self.filename_input.value or "").strip()
+        if not name:
+            self.export_status.object = "**Please enter a filename.**"
+            self.export_status.styles = {"color": "#b00020"}
+            return
+        # Ensure .bem extension
+        if not name.lower().endswith(".bem"):
+            name = name + ".bem"
+        name = os.path.join("geometry", name)
+        try:
+            # Gather current geometry
+            radius, chord = self.chord_editor.get_discretized_values(self.num_radial)
+            _, twist = self.twist_editor.get_discretized_values(self.num_radial)
+            diameter_m = float(self.diameter_input.value) * 0.0254
+            num_blades = int(self.num_blades_input.value)
+
+            # Write BEM file
+            create_bem_file(
+                radius_R=radius,
+                chord=chord,
+                twist_deg=twist,
+                diameter=diameter_m,
+                num_blade=num_blades,
+                output_path=name,
+                chord_is_relative=True,
+            )
+            self.export_status.object = f"Wrote BEM file: `{name}`"
+            self.export_status.styles = {"color": "#006400"}
+
+            # Optionally launch OpenVSP
+            if self.run_openvsp_checkbox.value:
+                try:
+                    send_bem_to_vsp(name)
+                    self.export_status.object += "\nOpenVSP launched with BEM file."
+                except Exception as e:
+                    self.export_status.object += f"\nOpenVSP launch failed: {e}"
+                    self.export_status.styles = {"color": "#b00020"}
+        except Exception as e:
+            self.export_status.object = f"**Error writing BEM**: {e}"
+            self.export_status.styles = {"color": "#b00020"}
 
 
 def serve_app():
