@@ -4,7 +4,6 @@ scikit-learn
 joblib
 pandas
 matplotlib
-PySide6
-PySide6-WebEngine
 bokeh
+panel
 scipy 
